@@ -1,6 +1,10 @@
 /* Host regression tests against the real BlueALSA 5 implementation. Unused
  * device code is discarded by gc-sections. */
 #define _GNU_SOURCE
+#include <stdio.h>
+/* Fixture for the LDAC decoder check; no library by default. */
+static const char * test_ldac_decoder_path = "/nonexistent/libldacdec.so.1";
+#define BT_LDAC_DECODER_PATH test_ldac_decoder_path
 #include "bluetooth_control.c"
 #include <assert.h>
 #include <errno.h>
@@ -208,8 +212,22 @@ FILE * __wrap_fopen(const char * path, const char * mode) {
     return __real_fopen(path, mode);
 }
 
+/* Automatic source: every codec, LDAC at high quality with adaptive bitrate. */
+#define AUTO_ARGS "--all-codecs\0--ldac-abr\0--ldac-quality\0high\0"
+static void assert_auto_codec_args(size_t * n) {
+    assert(strcmp(spawned[(*n)++], "--all-codecs") == 0);
+    assert(strcmp(spawned[(*n)++], "--ldac-abr") == 0);
+    assert(strcmp(spawned[(*n)++], "--ldac-quality") == 0 && strcmp(spawned[(*n)++], "high") == 0);
+}
+
+/* DAC mode always offers aptX and aptX-HD on top of BlueALSA's defaults. */
+static void assert_dac_stable_codecs(size_t * n) {
+    assert(strcmp(spawned[(*n)++], "-c") == 0 && strcmp(spawned[(*n)++], "aptX") == 0);
+    assert(strcmp(spawned[(*n)++], "-c") == 0 && strcmp(spawned[(*n)++], "aptX-HD") == 0);
+}
+
 static void test_daemon_argv(void) {
-    static const char source[] = "bluealsad\0-p\0a2dp-source\0--all-codecs\0";
+    static const char source[] = "bluealsad\0-p\0a2dp-source\0" AUTO_ARGS;
     static const char sink[] = "bluealsad\0-p\0a2dp-sink\0";
     static const char other[] = "/usr/bin/bluealsa-aplay\0-p\0a2dp-source\0";
     const struct { const char * args; size_t size; bool present; } cases[] = {
@@ -229,11 +247,12 @@ static void test_daemon_argv(void) {
         assert(kill_calls == 0);
         assert(spawn_calls == (unsigned)(!cases[i].present || cases[i].args == other));
         if (spawn_calls) {
-            assert(spawned_argc == 4);
+            assert(spawned_argc == 7);
             assert(strcmp(spawned[0], "/usr/bin/bluealsad") == 0);
             assert(strcmp(spawned[1], "-p") == 0);
             assert(strcmp(spawned[2], "a2dp-source") == 0);
-            assert(strcmp(spawned[3], "--all-codecs") == 0);
+            size_t n = 3;
+            assert_auto_codec_args(&n);
         }
         assert(pthread_mutex_trylock(&bt_daemon_respawn_mutex) == 0);
         pthread_mutex_unlock(&bt_daemon_respawn_mutex);
@@ -249,7 +268,8 @@ static void test_daemon_argv(void) {
         assert(strcmp(spawned[1], "-p") == 0);
         assert(strcmp(spawned[2], dac ? "a2dp-sink" : "a2dp-source") == 0);
         size_t n = 3;
-        assert(strcmp(spawned[n++], "--all-codecs") == 0);
+        if (!dac) assert_auto_codec_args(&n);
+        else assert_dac_stable_codecs(&n);
         assert(spawned_argc == n);
         assert(pthread_mutex_trylock(&bt_daemon_respawn_mutex) == 0);
         pthread_mutex_unlock(&bt_daemon_respawn_mutex);
@@ -296,9 +316,47 @@ static void test_sbc_xq_lifecycle(void) {
     assert(strcmp(spawned[3], "--sbc-quality=xq") == 0);
     kill_calls = spawn_calls = 0;
     assert(!bt_control_apply_output_settings(true, false));
-    assert(spawn_calls == 1 && kill_calls == 3 && spawned_argc == 4);
+    assert(spawn_calls == 1 && kill_calls == 3 && spawned_argc == 7);
     assert(strcmp(spawned[0], "/usr/bin/bluealsad") == 0);
-    assert(strcmp(spawned[3], "--all-codecs") == 0);
+    size_t n = 3;
+    assert_dac_stable_codecs(&n);
+    /* The experimental switch adds LDAC, but only with the rebuilt decoder:
+     * none is installed here, so the sink stays at the stable set. */
+    bt_control_set_dac_all_codecs(true);
+    kill_calls = spawn_calls = 0;
+    assert(!bt_control_apply_output_settings(true, false));
+    assert(spawn_calls == 1 && spawned_argc == 7);
+    /* With the rebuilt decoder installed, LDAC is offered too. The marker
+     * straddles the reader's 4096-byte chunk to cover the carried tail. */
+    char decoder_path[] = "/tmp/ldacdec_fixture_XXXXXX";
+    int decoder_fd = mkstemp(decoder_path);
+    assert(decoder_fd >= 0);
+    FILE * decoder = fdopen(decoder_fd, "wb");
+    assert(decoder);
+    for (int k = 0; k < 4090; k++) fputc(k & 1 ? '\0' : 'x', decoder);
+    fputs("ldacDecode_type_len", decoder);
+    fclose(decoder);
+    test_ldac_decoder_path = decoder_path;
+    kill_calls = spawn_calls = 0;
+    assert(!bt_control_apply_output_settings(true, false));
+    assert(spawn_calls == 1 && spawned_argc == 9);
+    assert(strcmp(spawned[7], "-c") == 0 && strcmp(spawned[8], "LDAC") == 0);
+    /* Switch off: no LDAC even with the rebuilt decoder installed. */
+    bt_control_set_dac_all_codecs(false);
+    kill_calls = spawn_calls = 0;
+    assert(!bt_control_apply_output_settings(true, false));
+    assert(spawn_calls == 1 && spawned_argc == 7);
+    bt_control_set_dac_all_codecs(true);
+    decoder = fopen(decoder_path, "wb"); /* stock decoder: no marker */
+    assert(decoder);
+    fputs("ldacDecode_type", decoder);
+    fclose(decoder);
+    kill_calls = spawn_calls = 0;
+    assert(!bt_control_apply_output_settings(true, false));
+    assert(spawn_calls == 1 && spawned_argc == 7);
+    unlink(decoder_path);
+    test_ldac_decoder_path = "/nonexistent/libldacdec.so.1";
+    bt_control_set_dac_all_codecs(false);
     process_cmdline = modern_sink; process_cmdline_size = sizeof(modern_sink);
     process_present = true; kill_calls = spawn_calls = 0;
     ensure_bluealsa_running();
@@ -327,11 +385,14 @@ static void test_modern_argv(void) {
     kill_calls = spawn_calls = 0;
     ensure_bluealsa_running();
     assert(kill_calls == 0 && spawn_calls == 1);
-    assert(spawned_argc == 4);
+    assert(spawned_argc == 7);
     assert(strcmp(spawned[0], "/usr/bin/bluealsad") == 0);
     assert(strcmp(spawned[1], "-p") == 0);
     assert(strcmp(spawned[2], "a2dp-source") == 0);
-    assert(strcmp(spawned[3], "--all-codecs") == 0);
+    {
+        size_t n = 3;
+        assert_auto_codec_args(&n);
+    }
 
     soft_volume_calls = 0;
     soft_volume_checked_calls = 0;
@@ -375,6 +436,8 @@ static void test_modern_argv(void) {
     assert(strcmp(spawned[0], "/usr/bin/bluealsad") == 0);
     assert(strcmp(spawned[1], "-p") == 0);
     assert(strcmp(spawned[2], "a2dp-source") == 0);
+    assert(!bt_control_apply_output_settings(true, true));
+    assert(atomic_load(&modern_soft_volume_requested)); /* DAC mode: phone volume via software */
 }
 
 static void test_bluez_paired_devices(void) {
@@ -425,13 +488,16 @@ static void test_force_audio_cd_argv(void) {
     process_cmdline = NULL; process_cmdline_size = 0;
     process_present = false; kill_calls = spawn_calls = 0;
     ensure_bluealsa_running();
-    assert(spawn_calls == 1 && spawned_argc == 5);
+    assert(spawn_calls == 1 && spawned_argc == 8);
     assert(strcmp(spawned[2], "a2dp-source") == 0);
     assert(strcmp(spawned[3], "--a2dp-force-audio-cd") == 0);
-    assert(strcmp(spawned[4], "--all-codecs") == 0);
+    {
+        size_t n = 4;
+        assert_auto_codec_args(&n);
+    }
 
     /* A daemon already carrying the argument is left alone. */
-    static const char forced[] = "/usr/bin/bluealsad\0-p\0a2dp-source\0--a2dp-force-audio-cd\0--all-codecs\0";
+    static const char forced[] = "/usr/bin/bluealsad\0-p\0a2dp-source\0--a2dp-force-audio-cd\0" AUTO_ARGS;
     process_cmdline = forced; process_cmdline_size = sizeof(forced);
     process_present = true; kill_calls = spawn_calls = 0;
     ensure_bluealsa_running();
@@ -452,8 +518,11 @@ static void test_force_audio_cd_argv(void) {
     process_cmdline = forced; process_cmdline_size = sizeof(forced);
     process_present = true; retain_process_after_kill = true; kill_calls = spawn_calls = 0;
     ensure_bluealsa_running();
-    assert(kill_calls == 1 && spawn_calls == 1 && spawned_argc == 4);
-    assert(strcmp(spawned[3], "--all-codecs") == 0);
+    assert(kill_calls == 1 && spawn_calls == 1 && spawned_argc == 7);
+    {
+        size_t n = 3;
+        assert_auto_codec_args(&n);
+    }
     retain_process_after_kill = false;
 
     /* Same mismatch with an accessory connected must NOT kill the daemon:
@@ -469,9 +538,8 @@ static void test_force_audio_cd_argv(void) {
     bt_control_set_sample_rate(0); /* automatic still means 44.1 for the source */
     kill_calls = spawn_calls = 0;
     assert(!bt_control_apply_output_settings(true, false));
-    assert(spawn_calls == 1 && spawned_argc == 4);
+    assert(spawn_calls == 1 && spawned_argc == 7);
     assert(strcmp(spawned[2], "a2dp-sink") == 0);
-    assert(strcmp(spawned[3], "--all-codecs") == 0);
     bt_control_set_sample_rate(48000);
 }
 
@@ -554,9 +622,60 @@ static void test_a2dp_capability_rates(void) {
     assert(!a2dp_caps_match_codec(aptx, sizeof(aptx), 0xff, "aptX-HD"));
 }
 
+static void test_auto_codec_ranking(void) {
+    char best[32];
+    assert(bluealsa_best_available_codec("Available codecs: SBC AAC aptX LDAC\n", 0, best, sizeof(best)) &&
+           strcmp(best, "LDAC") == 0);
+    assert(bluealsa_best_available_codec("Selected codec: SBC\nAvailable codecs: SBC AAC\nRate: 44100\n", 0,
+                                         best, sizeof(best)) && strcmp(best, "AAC") == 0);
+    assert(bluealsa_best_available_codec("Available codecs: AAC aptX aptX-HD SBC\n", 0, best, sizeof(best)) &&
+           strcmp(best, "aptX-HD") == 0);
+    assert(bluealsa_best_available_codec("Available codecs: SBC aptX AAC\n", 0, best, sizeof(best)) &&
+           strcmp(best, "aptX") == 0);
+    /* Codecs outside the ranking are ignored; SBC is always the floor. */
+    assert(bluealsa_best_available_codec("Available codecs: FastStream LC3plus SBC\n", 0, best, sizeof(best)) &&
+           strcmp(best, "SBC") == 0);
+    /* Not known yet: the accessory's endpoints have not been published. */
+    assert(!bluealsa_best_available_codec("Available codecs: [ Unknown ]\n", 0, best, sizeof(best)));
+    assert(!bluealsa_best_available_codec("Selected codec: AAC\n", 0, best, sizeof(best)));
+    /* Codecs Automatic found unusable on a device are skipped. */
+    assert(bluealsa_best_available_codec("Available codecs: SBC AAC aptX LDAC\n", 1u << 0, best, sizeof(best)) &&
+           strcmp(best, "aptX") == 0);
+    assert(bluealsa_best_available_codec("Available codecs: SBC AAC aptX LDAC\n", (1u << 0) | (1u << 2),
+                                         best, sizeof(best)) && strcmp(best, "AAC") == 0);
+
+    /* Per-device memory: a failed codec, and one followed by a quick
+     * disconnect, are skipped next time; SBC is never rejected. */
+    const char * dev_a = "/org/bluealsa/hci0/dev_AA_AA_AA_AA_AA_AA/a2dpsrc/sink";
+    const char * dev_b = "/org/bluealsa/hci0/dev_BB_BB_BB_BB_BB_BB/a2dpsrc/sink";
+    assert(bt_auto_rejected(dev_a) == 0);
+    bt_auto_reject(dev_a, "LDAC");
+    assert(bt_auto_rejected(dev_a) == 1u << 0 && bt_auto_rejected(dev_b) == 0);
+    bt_auto_note_switch(dev_b, "aptX");
+    bt_auto_note_disconnect(dev_b);
+    assert(bt_auto_rejected(dev_b) == 1u << 2);
+    bt_auto_reject(dev_b, "SBC");
+    assert(bt_auto_rejected(dev_b) == 1u << 2);
+}
+
+static void test_rate_refusal_memory(void) {
+    /* A refused rate survives routine re-application (e.g. on reconnect);
+     * only a rate the user chooses clears it. */
+    snprintf(bt_rate_refused_path, sizeof(bt_rate_refused_path), "%s", "/org/bluealsa/hci0/dev_X/a2dpsrc/sink");
+    snprintf(bt_rate_refused_codec, sizeof(bt_rate_refused_codec), "%s", "AAC");
+    bt_rate_refused_rate = 96000;
+    bt_control_set_sample_rate(96000);
+    bt_control_set_sample_rate(48000);
+    assert(bt_rate_refused_rate == 96000 && bt_rate_refused_path[0]);
+    bt_control_choose_sample_rate(48000);
+    assert(bt_rate_refused_rate == 0 && !bt_rate_refused_path[0] && !bt_rate_refused_codec[0]);
+}
+
 int main(void) {
     /* A locking regression must fail promptly rather than hang the target. */
     alarm(10);
+    test_auto_codec_ranking();
+    test_rate_refusal_memory();
 
     int monitor_volume = -1;
     assert(parse_monitor_volume("0x7f7f", &monitor_volume) && monitor_volume == 127);

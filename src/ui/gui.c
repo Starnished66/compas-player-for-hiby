@@ -1435,6 +1435,8 @@ void gui_init(uint32_t screen_width, uint32_t screen_height) {
     settings_load(&current_settings);
     bt_control_restore_codec_preference(current_settings.bt_codec);
     bt_control_set_speexrate_enabled(current_settings.bt_speexrate_enabled);
+    bt_control_set_dac_all_codecs(current_settings.dev_bt_dac_all_codecs);
+    gui_library_set_covers_during_playback(current_settings.dev_covers_during_playback);
     bt_control_set_sample_rate(current_settings.bt_sample_rate);
     db_log_set_enabled(current_settings.db_logging_enabled);
     hw_buttons_set_screenshot_combo_enabled(current_settings.screenshot_combo_enabled);

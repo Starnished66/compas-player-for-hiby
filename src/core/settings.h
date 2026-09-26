@@ -215,6 +215,14 @@ typedef struct {
      * is easy to hit by accident in a pocket, and nobody who does not know it
      * exists should find the card filling with images. */
     bool screenshot_combo_enabled;
+    /* Developer Options, experimental, off by default. dev_bt_dac_all_codecs
+     * (key kept from when it also covered aptX) adds LDAC to the Bluetooth
+     * DAC-mode sink, only with the rebuilt decoder, as the stock firmware
+     * one crashes; aptX and aptX-HD are always offered. dev_covers_during_playback lets the cover
+     * warmer keep reading already generated thumbnails while audio plays;
+     * extracting new covers still waits for playback to stop. */
+    bool dev_bt_dac_all_codecs;
+    bool dev_covers_during_playback;
 
     /* Caps the PMIC's charge-termination voltage to 4.2V to extend battery
      * longevity, rather than a literal state-of-charge cutoff -- see

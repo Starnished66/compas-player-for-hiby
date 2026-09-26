@@ -1723,7 +1723,7 @@ static void bt_rate_option_row_cb(lv_event_t * e) {
     if (bt_connected_mac_cached[0]) settings_bt_set_rate_for(&current_settings, bt_connected_mac_cached, rate);
     else current_settings.bt_sample_rate = rate;
     settings_save_async(&current_settings);
-    bt_control_set_sample_rate(rate);
+    bt_control_choose_sample_rate(rate);
     populate_bt_rate_screen();
     if (!changed) return;
 

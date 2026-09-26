@@ -1,6 +1,8 @@
 #include "gui.h"
 #include "gui_settings.h"
 #include "hw_buttons.h"
+#include "gui_library.h"
+#include "bluetooth_control.h"
 #include "gui_shell.h"
 #include "gui_text_input.h"
 #include "app_clock.h"
@@ -522,8 +524,22 @@ static void screenshot_combo_switch_event_cb(lv_event_t * e) {
     hw_buttons_set_screenshot_combo_enabled(current_settings.screenshot_combo_enabled);
 }
 
+static void dev_bt_dac_all_codecs_switch_event_cb(lv_event_t * e) {
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    current_settings.dev_bt_dac_all_codecs = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    settings_save(&current_settings);
+    bt_control_set_dac_all_codecs(current_settings.dev_bt_dac_all_codecs);
+}
+
+static void dev_covers_during_playback_switch_event_cb(lv_event_t * e) {
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    current_settings.dev_covers_during_playback = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    settings_save(&current_settings);
+    gui_library_set_covers_during_playback(current_settings.dev_covers_during_playback);
+}
+
 static lv_obj_t * build_dev_options_screen(void) {
-    static pill_list_item_t items[3];
+    static pill_list_item_t items[5];
     /* ADB lives here rather than on the USB Mode screen: it overrides
      * Storage/DAC while on and persists across a reboot, so it sits behind
      * Developer Options as the explicit opt-in that makes re-applying it on
@@ -536,7 +552,15 @@ static lv_obj_t * build_dev_options_screen(void) {
     items[2] = (pill_list_item_t){ "Screenshots (Power + Vol Down)", PILL_ACCESSORY_TOGGLE,
                                     current_settings.screenshot_combo_enabled, NULL,
                                     screenshot_combo_switch_event_cb, NULL };
-    lv_obj_t * scr = build_pill_list_screen("Developer Options", generic_back_cb, items, 3, gui_theme_accent_style(), GUI_ROW_GAP, 100);
+    /* Experimental: off by default, see settings.h. The DAC codec switch
+     * applies the next time DAC mode starts. */
+    items[3] = (pill_list_item_t){ "LDAC in DAC mode (Experimental)", PILL_ACCESSORY_TOGGLE,
+                                    current_settings.dev_bt_dac_all_codecs, NULL,
+                                    dev_bt_dac_all_codecs_switch_event_cb, NULL };
+    items[4] = (pill_list_item_t){ "Load covers during playback (Experimental)", PILL_ACCESSORY_TOGGLE,
+                                    current_settings.dev_covers_during_playback, NULL,
+                                    dev_covers_during_playback_switch_event_cb, NULL };
+    lv_obj_t * scr = build_pill_list_screen("Developer Options", generic_back_cb, items, 5, gui_theme_accent_style(), GUI_ROW_GAP, 100);
     finalize_screen_navigation(scr);
     return scr;
 }

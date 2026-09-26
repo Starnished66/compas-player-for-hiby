@@ -107,6 +107,9 @@ void gui_library_resume_fast_timers(void);
 void gui_library_reset_drag_state(void);
 
 bool gui_library_has_background_work(void);
+/* Experimental (Developer Options): let the cover warmer keep reading already
+ * generated thumbnails while audio plays. */
+void gui_library_set_covers_during_playback(bool enabled);
 /* True only while a modal library operation owns navigation. Optional
  * workers such as album-art warming remain background work for shutdown
  * coordination, but must not disable the drawer or screen gestures. */

@@ -1930,6 +1930,20 @@ static bool album_thumb_gen_thread_joinable;
 static atomic_int album_thumb_gen_done_count;
 static atomic_int album_thumb_gen_total_count;
 static atomic_int album_thumb_gen_cache_epoch;
+/* Experimental (Developer Options): keep reading already generated 72px
+ * covers while audio plays. playback_pass_epoch records the cache epoch whose
+ * playback-time pass finished, so the retry path does not rerun it every
+ * backoff; anything that needs real extraction waits for playback to stop. */
+static atomic_bool album_thumb_gen_covers_during_playback;
+static atomic_int album_thumb_gen_playback_pass_epoch = -1;
+
+void gui_library_set_covers_during_playback(bool enabled) {
+    atomic_store(&album_thumb_gen_covers_during_playback, enabled);
+}
+
+static bool album_thumb_gen_paused_for_playback(bool user_visible) {
+    return !user_visible && audio_is_playing() && !atomic_load(&album_thumb_gen_covers_during_playback);
+}
 static atomic_bool album_thumb_gen_retry_pending;
 static uint32_t album_thumb_gen_retry_tick;
 static volatile bool sd_format_active = false;
@@ -3228,7 +3242,7 @@ static void * album_thumb_gen_thread_func(void * arg) {
         if (album_thumb_gen_should_cancel(my_generation)) break;
 
         /* Suspend warmer while audio is playing, visible lazy work is pending, or memory is low */
-        if ((!user_visible && audio_is_playing()) ||
+        if (album_thumb_gen_paused_for_playback(user_visible) ||
             (!user_visible && album_thumbnail_lazy_work_pending()) ||
             !artwork_check_memory_admission(decode_prio, ALBUM_ART_METADATA_START_BYTES)) {
             if (user_visible) atomic_fetch_add(&album_thumb_gen_error_count, 1);
@@ -3261,7 +3275,7 @@ static void * album_thumb_gen_thread_func(void * arg) {
             }
 
             /* Check suspension before each album */
-            if ((!user_visible && audio_is_playing()) ||
+            if (album_thumb_gen_paused_for_playback(user_visible) ||
                 (!user_visible && album_thumbnail_lazy_work_pending())) {
                 if (user_visible) atomic_fetch_add(&album_thumb_gen_error_count, 1);
                 else atomic_store(&album_thumb_gen_retry_pending, true);
@@ -3291,6 +3305,56 @@ static void * album_thumb_gen_thread_func(void * arg) {
 
             albumart_info_t info;
             albumart_info_from_song_row(&song, &info);
+
+            /* Playing with the experimental switch on: only read a 72px cover
+             * already generated on the card (thumbnail priority, which the
+             * coordinator admits during playback). Anything needing real
+             * extraction is left for the pass after playback stops. */
+            if (!user_visible && audio_is_playing()) {
+                if (album_thumb_gen_ram_filled >= ALBUM_THUMBNAIL_CACHE_SIZE) {
+                    /* RAM budget full: further reads would be decoded only
+                     * to be freed. End this playback pass now. */
+                    atomic_store(&album_thumb_gen_playback_pass_epoch,
+                                 atomic_load(&album_thumb_gen_cache_epoch));
+                    atomic_store(&album_thumb_gen_retry_pending, true);
+                    goto done;
+                }
+                uint16_t * cached_pixels = NULL;
+                char found[PATH_MAX];
+                if (albumart_generated_cache_fresh(&info, ALBUM_THUMBNAIL_PX, ALBUM_THUMBNAIL_PX,
+                                                   found, sizeof(found))) {
+                    uint8_t * data = NULL;
+                    uint32_t size = 0;
+                    if (albumart_load_file_ex(found, &data, &size, THUMBNAIL_SIDECAR_MAX_BYTES,
+                                              ARTWORK_PRIO_THUMBNAIL) == ALBUMART_LOAD_OK) {
+                        if (cover_decode_to_rgb565_ex(data, size, ALBUM_THUMBNAIL_PX, ALBUM_THUMBNAIL_PX,
+                                ARTWORK_PRIO_THUMBNAIL, album_thumb_gen_cancel_cb,
+                                (void *) (intptr_t) my_generation, &cached_pixels) != COVER_DECODE_OK) {
+                            free(cached_pixels);
+                            cached_pixels = NULL;
+                        }
+                    }
+                    free(data);
+                }
+                if (!cached_pixels) {
+                    atomic_store(&album_thumb_gen_retry_pending, true);
+                } else {
+                    album_thumb_gen_ram_filled++;
+                    album_thumbnail_handoff_t handoff = {
+                        .kind = ALBUM_BOOT_RESULT_ALBUM,
+                        .cache_epoch = atomic_load(&album_thumb_gen_cache_epoch),
+                        .key_kind = THUMBNAIL_KEY_ALBUM,
+                        .key = album_key,
+                        .song_id = song.id,
+                        .pixels = (uint8_t *) cached_pixels,
+                    };
+                    if (!album_thumb_gen_handoff_result(my_generation, &handoff)) goto done;
+                    cached++;
+                }
+                atomic_fetch_add(&album_thumb_gen_done_count, 1);
+                usleep(ALBUM_THUMB_GEN_INTER_ALBUM_US);
+                continue;
+            }
 
             time_t source_mtime = album_source_mtime(&song, &info);
 
@@ -3410,6 +3474,14 @@ static void * album_thumb_gen_thread_func(void * arg) {
                 }
                 usleep(ALBUM_THUMB_GEN_INTER_BATCH_US / 10);
             }
+    }
+    if (!user_visible && !single_album && audio_is_playing()) {
+        /* Playback-time pass (experimental switch) done for this cache
+         * epoch; the artist pass and any skipped extraction wait for
+         * playback to stop. */
+        atomic_store(&album_thumb_gen_playback_pass_epoch, atomic_load(&album_thumb_gen_cache_epoch));
+        atomic_store(&album_thumb_gen_retry_pending, true);
+        goto done;
     }
     if (!user_visible && !single_album && !album_thumb_gen_should_cancel(my_generation) &&
         !album_thumb_gen_warm_artist_aliases(my_generation))
@@ -6607,7 +6679,10 @@ void poll_library_rescan(void) {
     if (atomic_load(&album_thumb_gen_retry_pending) &&
         !atomic_load(&album_thumb_gen_active) && !atomic_load(&album_thumbnail_active) &&
         !album_thumbnail_lazy_work_pending() && !library_rescan_active &&
-        !sd_format_active && !audio_is_playing() &&
+        !sd_format_active &&
+        (!audio_is_playing() ||
+         (atomic_load(&album_thumb_gen_covers_during_playback) &&
+          atomic_load(&album_thumb_gen_playback_pass_epoch) != atomic_load(&album_thumbnail_cache_epoch))) &&
         lv_tick_elaps(album_thumb_gen_retry_tick) >= 15000 &&
 #ifndef HOST_BUILD
         sd_card_root_is_mounted() &&
