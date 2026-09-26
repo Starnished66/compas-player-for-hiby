@@ -1,0 +1,168 @@
+diff -ruN a/src/a2dp-aac.c b/src/a2dp-aac.c
+--- a/src/a2dp-aac.c	2026-08-26 22:46:51.000000000 -0600
++++ b/src/a2dp-aac.c	2026-09-26 01:35:30.324874844 -0600
+@@ -490,7 +490,7 @@
+ 
+ 		const uint8_t *rtp_latm;
+ 		const rtp_header_t *rtp_header = bt.data;
+-		if ((rtp_latm = rtp_a2dp_get_payload(rtp_header)) == NULL)
++		if ((rtp_latm = rtp_a2dp_get_payload(rtp_header, len, 1)) == NULL)
+ 			continue;
+ 
+ 		int missing_rtp_frames = 0;
+diff -ruN a/src/a2dp-aptx-hd.c b/src/a2dp-aptx-hd.c
+--- a/src/a2dp-aptx-hd.c	2026-08-26 22:46:51.000000000 -0600
++++ b/src/a2dp-aptx-hd.c	2026-09-26 01:35:30.325342270 -0600
+@@ -288,7 +288,7 @@
+ 
+ 		const uint8_t *rtp_payload;
+ 		const rtp_header_t *rtp_header = bt.data;
+-		if ((rtp_payload = rtp_a2dp_get_payload(rtp_header)) == NULL)
++		if ((rtp_payload = rtp_a2dp_get_payload(rtp_header, len, 1)) == NULL)
+ 			continue;
+ 
+ 		int missing_rtp_frames = 0;
+diff -ruN a/src/a2dp-lc3plus.c b/src/a2dp-lc3plus.c
+--- a/src/a2dp-lc3plus.c	2026-08-26 22:46:51.000000000 -0600
++++ b/src/a2dp-lc3plus.c	2026-09-26 01:35:30.323635633 -0600
+@@ -486,7 +486,7 @@
+ 
+ 		const rtp_header_t *rtp_header = bt.data;
+ 		const rtp_media_header_t *rtp_media_header;
+-		if ((rtp_media_header = rtp_a2dp_get_payload(rtp_header)) == NULL)
++		if ((rtp_media_header = rtp_a2dp_get_payload(rtp_header, len, sizeof(*rtp_media_header))) == NULL)
+ 			continue;
+ 
+ 		int missing_rtp_frames = 0;
+diff -ruN a/src/a2dp-ldac.c b/src/a2dp-ldac.c
+--- a/src/a2dp-ldac.c	2026-08-26 22:46:51.000000000 -0600
++++ b/src/a2dp-ldac.c	2026-09-26 01:35:30.322553558 -0600
+@@ -346,7 +346,7 @@
+ 
+ 		const rtp_header_t *rtp_header = bt.data;
+ 		const rtp_media_header_t *rtp_media_header;
+-		if ((rtp_media_header = rtp_a2dp_get_payload(rtp_header)) == NULL)
++		if ((rtp_media_header = rtp_a2dp_get_payload(rtp_header, len, sizeof(*rtp_media_header))) == NULL)
+ 			continue;
+ 
+ 		int missing_rtp_frames = 0;
+diff -ruN a/src/a2dp-lhdc.c b/src/a2dp-lhdc.c
+--- a/src/a2dp-lhdc.c	2026-08-26 22:46:51.000000000 -0600
++++ b/src/a2dp-lhdc.c	2026-09-26 01:35:30.323956424 -0600
+@@ -475,7 +475,7 @@
+ 
+ 		const rtp_header_t *rtp_header = bt.data;
+ 		const rtp_lhdc_media_header_t *rtp_lhdc_media_header;
+-		if ((rtp_lhdc_media_header = rtp_a2dp_get_payload(rtp_header)) == NULL)
++		if ((rtp_lhdc_media_header = rtp_a2dp_get_payload(rtp_header, len, sizeof(*rtp_lhdc_media_header))) == NULL)
+ 			continue;
+ 
+ 		int missing_rtp_frames = 0;
+diff -ruN a/src/a2dp-mpeg.c b/src/a2dp-mpeg.c
+--- a/src/a2dp-mpeg.c	2026-08-26 22:46:51.000000000 -0600
++++ b/src/a2dp-mpeg.c	2026-09-26 01:35:30.324217673 -0600
+@@ -434,7 +434,7 @@
+ 
+ 		const rtp_header_t *rtp_header = bt.data;
+ 		const rtp_mpeg_audio_header_t *rtp_mpeg_header;
+-		if ((rtp_mpeg_header = rtp_a2dp_get_payload(rtp_header)) == NULL)
++		if ((rtp_mpeg_header = rtp_a2dp_get_payload(rtp_header, len, sizeof(*rtp_mpeg_header))) == NULL)
+ 			continue;
+ 
+ 		int missing_rtp_frames = 0;
+diff -ruN a/src/a2dp-opus.c b/src/a2dp-opus.c
+--- a/src/a2dp-opus.c	2026-08-26 22:46:51.000000000 -0600
++++ b/src/a2dp-opus.c	2026-09-26 01:35:30.323112653 -0600
+@@ -324,7 +324,7 @@
+ 
+ 		const rtp_header_t *rtp_header = bt.data;
+ 		const rtp_media_header_t *rtp_media_header;
+-		if ((rtp_media_header = rtp_a2dp_get_payload(rtp_header)) == NULL)
++		if ((rtp_media_header = rtp_a2dp_get_payload(rtp_header, len, sizeof(*rtp_media_header))) == NULL)
+ 			continue;
+ 
+ 		int missing_rtp_frames = 0;
+diff -ruN a/src/a2dp-sbc.c b/src/a2dp-sbc.c
+--- a/src/a2dp-sbc.c	2026-08-26 22:46:51.000000000 -0600
++++ b/src/a2dp-sbc.c	2026-09-26 01:35:30.322152885 -0600
+@@ -352,7 +352,7 @@
+ 
+ 		const rtp_header_t *rtp_header = bt.data;
+ 		const rtp_media_header_t *rtp_media_header;
+-		if ((rtp_media_header = rtp_a2dp_get_payload(rtp_header)) == NULL)
++		if ((rtp_media_header = rtp_a2dp_get_payload(rtp_header, len, sizeof(*rtp_media_header))) == NULL)
+ 			continue;
+ 
+ 		int missing_rtp_frames = 0;
+diff -ruN a/src/rtp.c b/src/rtp.c
+--- a/src/rtp.c	2026-08-26 22:46:51.000000000 -0600
++++ b/src/rtp.c	2026-09-26 01:35:30.320243968 -0600
+@@ -54,9 +54,22 @@
+  * Get A2DP RTP header payload data.
+  *
+  * @param hdr The pointer to data with RTP header.
++ * @param len The number of bytes received at hdr.
++ * @param min_payload Bytes the caller reads right after the RTP header (its
++ *   media payload header), at least 1.
+  * @return On success, this function returns pointer to data just after
+- *   the RTP header - RTP header payload. On failure, NULL is returned. */
+-void *rtp_a2dp_get_payload(const rtp_header_t *hdr) {
++ *   the RTP header - RTP header payload. On failure, including a packet too
++ *   short for its fixed header, CSRC list and min_payload bytes, NULL is
++ *   returned. */
++void *rtp_a2dp_get_payload(const rtp_header_t *hdr, size_t len, size_t min_payload) {
++
++	if (min_payload < 1)
++		min_payload = 1;
++	if (len < RTP_HEADER_LEN ||
++			len < RTP_HEADER_LEN + hdr->cc * sizeof(hdr->csrc[0]) + min_payload) {
++		warn("Truncated RTP packet: %zu bytes", len);
++		return NULL;
++	}
+ 
+ #if ENABLE_PAYLOADCHECK
+ 	if (hdr->paytype < 96) {
+diff -ruN a/src/rtp.h b/src/rtp.h
+--- a/src/rtp.h	2026-08-26 22:46:51.000000000 -0600
++++ b/src/rtp.h	2026-09-26 01:35:30.320084189 -0600
+@@ -83,7 +83,7 @@
+ } __attribute__ ((packed)) rtp_lhdc_media_header_t;
+ 
+ void *rtp_a2dp_init(void *s, rtp_header_t **hdr, void **phdr, size_t phdr_size);
+-void *rtp_a2dp_get_payload(const rtp_header_t *hdr);
++void *rtp_a2dp_get_payload(const rtp_header_t *hdr, size_t len, size_t min_payload);
+ 
+ /* Structure for storing local state
+  * of the ongoing RTP transmission. */
+diff -ruN a/test/test-rtp.c b/test/test-rtp.c
+--- a/test/test-rtp.c	2026-08-26 22:46:51.000000000 -0600
++++ b/test/test-rtp.c	2026-09-26 01:35:30.325928919 -0600
+@@ -48,15 +48,26 @@
+ 	uint8_t *payload;
+ 
+ #if ENABLE_PAYLOADCHECK
+-	payload = rtp_a2dp_get_payload(header);
++	payload = rtp_a2dp_get_payload(header, sizeof(buffer), 1);
+ 	ck_assert_ptr_eq(payload, NULL);
+ #endif
+ 
+ 	header->paytype = 96;
+-	payload = rtp_a2dp_get_payload(header);
++	payload = rtp_a2dp_get_payload(header, sizeof(buffer), 1);
+ 	ck_assert_ptr_ne(payload, NULL);
+ 	ck_assert_int_eq(payload[0], 12);
+ 
++	/* Too short for the fixed header, or for a single payload byte. */
++	ck_assert_ptr_eq(rtp_a2dp_get_payload(header, RTP_HEADER_LEN - 1, 1), NULL);
++	ck_assert_ptr_eq(rtp_a2dp_get_payload(header, RTP_HEADER_LEN, 1), NULL);
++	/* The CSRC list must fit inside the packet too. */
++	header->cc = 15;
++	ck_assert_ptr_eq(rtp_a2dp_get_payload(header, RTP_HEADER_LEN + 15 * 4, 1), NULL);
++	ck_assert_ptr_ne(rtp_a2dp_get_payload(header, RTP_HEADER_LEN + 15 * 4 + 1, 1), NULL);
++	/* A 4-byte media header (MPEG) must fit entirely. */
++	ck_assert_ptr_eq(rtp_a2dp_get_payload(header, RTP_HEADER_LEN + 15 * 4 + 3, 4), NULL);
++	ck_assert_ptr_ne(rtp_a2dp_get_payload(header, RTP_HEADER_LEN + 15 * 4 + 4, 4), NULL);
++
+ } CK_END_TEST
+ 
+ CK_START_TEST(test_rtp_state_new_frame) {

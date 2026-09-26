@@ -1,0 +1,19 @@
+diff -ruN a/src/bluealsa-dbus.c b/src/bluealsa-dbus.c
+--- a/src/bluealsa-dbus.c	2026-09-26 07:55:15.688020118 -0600
++++ b/src/bluealsa-dbus.c	2026-09-26 07:55:15.697756253 -0600
+@@ -1018,8 +1018,13 @@
+ 		/* In case when the software volume was just enabled, set the volume level
+ 		 * to the maximum. This will prevent volume change during the transition.
+ 		 * In case of disabling the software volume, we will restore the hardware
+-		 * volume level, so the volume control will indicate the correct level. */
+-		const int volume = soft_volume ? volume_max : ba_transport_pcm_get_hardware_volume(pcm);
++		 * volume level, so the volume control will indicate the correct level.
++		 * HiBy: an A2DP sink keeps the remote device's volume instead. Its PCM
++		 * level already follows that volume, and resetting it to the maximum
++		 * would also send the maximum back to the phone. */
++		const bool keep_remote_volume = t->profile & BA_TRANSPORT_PROFILE_A2DP_SINK;
++		const int volume = soft_volume && !keep_remote_volume ?
++			volume_max : ba_transport_pcm_get_hardware_volume(pcm);
+ 		const int level = ba_transport_pcm_volume_range_to_level(volume, volume_max);
+ 
+ 		pthread_mutex_lock(&pcm->mutex);

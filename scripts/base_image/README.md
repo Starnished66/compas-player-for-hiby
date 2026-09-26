@@ -20,8 +20,18 @@ not `mipsel-linux-musl-gcc`.
 | zlib | 1.3.2 |
 | Expat | 2.8.4 |
 
-Retain the matched vendor LDAC encoder/ABR/decoder trio. The small decoder
-compatibility header supplies declarations, not a new decoder implementation.
+Retain the matched vendor LDAC encoder/ABR pair. The LDAC decoder is rebuilt
+from source: the vendor libldacdec.so.1 segfaults (decodeSpectrumFine,
+decodeScaleFactors) about a second into real LDAC reception in DAC mode.
+`libldacdec-hiby.patch` bounds every read to the packet and frame, validates
+stream fields and the negotiated rate/channel mode, commits IMDCT history only
+for fully valid frames, and fixes upstream decoding bugs (fine-precision cap
+and dequantization, descending gradient, dual-channel blocks, mode-2 scale
+factor wrap, scale factor 0, S32 gain). Soname, exports and ABI match the
+vendor build. `ldac_decoder_harness.c` is the host check: it encodes with the
+pinned AOSP encoder and decodes through dlopen, reporting rejects and SNR.
+The small decoder compatibility header supplies the declarations BlueALSA
+needs.
 Keep libc/loader, OpenSSL, curl, Wi-Fi drivers/firmware and the working player
 mbedTLS version unchanged in this batch. Shared-library SONAME filenames do
 not establish upstream source versions.
@@ -45,12 +55,13 @@ existing dirty checkout:
 | `scratch/base-upgrade/fdk-aac` | https://github.com/mstorsjo/fdk-aac | `716f4394641d53f0d79c9ddac3fa93b03a49f278` |
 | `scratch/base-upgrade/libopenaptx` | https://github.com/pali/libopenaptx | `2459ed4686eaef0a19dfa3f330a960813c5f60de` |
 | `scratch/base-upgrade/ldacBT` | https://github.com/EHfive/ldacBT | `6579bd585a618f2e1612b3c1650d2b7fcfb1d43f` |
+| `scratch/base-upgrade/libldacdec-anonymix007` | https://github.com/anonymix007/libldacdec | `c90094b15e25aef0e47c6d775fa94aceb36cabbc` |
 | `dbus` (existing checkout) | https://gitlab.freedesktop.org/dbus/dbus | `958bf9db2100553bcd2fe2a854e1ebb42e886054` |
 
 Initialize LDAC's submodule: its `libldac` revision must be
-`82b6a1abee84787b8fa167efe20290073f60db2d`. The decoder declarations were
-checked against anonymix007/libldacdec revision
-`c90094b15e25aef0e47c6d775fa94aceb36cabbc`; that source is not built.
+`82b6a1abee84787b8fa167efe20290073f60db2d`. The LDAC decoder is built from
+anonymix007/libldacdec `c90094b15e25aef0e47c6d775fa94aceb36cabbc` plus
+`libldacdec-hiby.patch` (its own `libldac` submodule is not needed).
 
 From the repository root:
 

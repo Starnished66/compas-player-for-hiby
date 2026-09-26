@@ -24,7 +24,7 @@ copy_libraries "$base/expat/current" libexpat
 copy_libraries "$base/bluez-library/stage" libbluetooth
 copy_libraries "$base/dbus/stage" libdbus-1
 copy_libraries "$base/glib/stage" libglib-2.0 libgobject-2.0 libgio-2.0 libgmodule-2.0 libgthread-2.0 libffi libpcre2-8
-copy_libraries "$base/codecs/stage" libfdk-aac libopenaptx
+copy_libraries "$base/codecs/stage" libfdk-aac libopenaptx libldacdec
 for binary in bluealsad bluealsactl bluealsa-aplay; do
     cp "$base/bluealsa/stage/usr/bin/$binary" "$overlay/usr/bin/"
 done
@@ -81,6 +81,9 @@ bluez_src="$(dirname "$(readlink -f "$base/bluez-library/stage")")/bluez-5.87"
 copy_notice bluez "$bluez_src/COPYING" "$bluez_src/COPYING.LIB"
 copy_notice fdk-aac "$base/fdk-aac/NOTICE"
 copy_notice libopenaptx "$base/libopenaptx/COPYING"
+# Upstream publishes no license file; ship its README and our patch with it.
+copy_notice libldacdec "$base/libldacdec-anonymix007/README.md" \
+    "$repo/scripts/base_image/libldacdec-hiby.patch"
 cross=${BASE_CROSS_PREFIX:-"$repo/scratch/ingenic-toolchain-v5.2/toolchain/bin/mips-linux-gnu-"}
 while IFS= read -r -d '' elf; do
     [[ $(head -c 4 "$elf") == $'\177ELF' ]] || continue
@@ -90,6 +93,9 @@ while IFS= read -r -d '' elf; do
         exit 1
     fi
 done < <(find "$overlay/usr" -type f -print0)
+# The rebuilt LDAC decoder must be what ships: the vendor one crashes in DAC mode.
+cmp -s "$overlay/usr/lib/libldacdec.so.1" "$base/codecs/stage/usr/lib/libldacdec.so.1" ||
+    { echo 'Overlay LDAC decoder differs from the codec stage' >&2; exit 1; }
 (cd "$overlay" && find . \( -type f -o -type l \) -print | LC_ALL=C sort) > "$run/files.txt"
 [[ ! -e "$base/overlay" || -L "$base/overlay" ]] || { echo 'overlay must be a symlink' >&2; exit 1; }
 ln -sfnT "$overlay" "$base/overlay"

@@ -1,0 +1,46 @@
+diff -ruN a/profiles/audio/avdtp.c b/profiles/audio/avdtp.c
+--- a/profiles/audio/avdtp.c	2026-09-26 08:10:42.130629476 -0600
++++ b/profiles/audio/avdtp.c	2026-09-26 08:10:42.139805154 -0600
+@@ -2404,6 +2404,7 @@
+ 	struct avdtp *session = user_data;
+ 	char address[18];
+ 	int err_no = EIO;
++	uint16_t imtu, omtu;
+ 
+ 	if (err) {
+ 		err_no = err->code;
+@@ -2417,9 +2418,13 @@
+ 	/* Check if kernel supports reading packet types */
+ 	bt_io_get(chan, NULL, BT_IO_OPT_PHY, &session->phy, BT_IO_OPT_INVALID);
+ 
++	/* HiBy: read into locals. Only the signaling channel owns
++	 * session->imtu/omtu, which also size session->buf; a transport channel's
++	 * MTUs overwriting them made later signaling reads and fragmented sends
++	 * use limits larger than that buffer. */
+ 	bt_io_get(chan, &err,
+-			BT_IO_OPT_OMTU, &session->omtu,
+-			BT_IO_OPT_IMTU, &session->imtu,
++			BT_IO_OPT_OMTU, &omtu,
++			BT_IO_OPT_IMTU, &imtu,
+ 			BT_IO_OPT_INVALID);
+ 	if (err) {
+ 		err_no = err->code;
+@@ -2433,6 +2438,8 @@
+ 			address);
+ 
+ 	if (session->state == AVDTP_SESSION_STATE_CONNECTING) {
++		session->imtu = imtu;
++		session->omtu = omtu;
+ 		DBG("AVDTP imtu=%u, omtu=%u", session->imtu, session->omtu);
+ 
+ 		session->buf = g_malloc0(MAX(session->imtu, session->omtu));
+@@ -2449,8 +2456,7 @@
+ 		if (session->stream_setup)
+ 			set_disconnect_timer(session);
+ 	} else if (session->pending_open)
+-		handle_transport_connect(session, chan, session->imtu,
+-								session->omtu);
++		handle_transport_connect(session, chan, imtu, omtu);
+ 	else
+ 		goto failed;
+ 

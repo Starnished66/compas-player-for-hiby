@@ -62,8 +62,22 @@ fetch alsa-plugins-1.2.12 https://www.alsa-project.org/files/pub/plugins/alsa-pl
 # up front because the package's install hook symlinks the quality variants
 # into it before anything else has made it.
 mkdir -p "$work/stage/usr/lib/alsa-lib"
+# Libtool .la metadata on the link path makes it embed this workstation's
+# stage directory as the plugin's RPATH (see build_base_bluealsa.sh). The
+# pkg-config and -L flags already supply the linkage.
+mkdir -p "$work/libtool-metadata"
+for archive in "$work"/stage/usr/lib/*.la; do
+    [[ ! -f "$archive" ]] || mv "$archive" "$work/libtool-metadata/"
+done
 build_autoconf alsa-plugins-1.2.12 --disable-oss --disable-mix --disable-usbstream \
     --disable-arcamav --disable-jack --disable-pulseaudio --disable-samplerate \
     --disable-libav --disable-a52 --disable-lavrate --disable-aaf
+for elf in "$work"/stage/usr/lib/*.so* "$work"/stage/usr/lib/alsa-lib/*.so; do
+    [[ -f "$elf" && ! -L "$elf" ]] || continue
+    if readelf -d "$elf" | grep -E '(RPATH|RUNPATH).*\[.*/(home|scratch)/' >/dev/null; then
+        echo "Host runtime path in $elf" >&2
+        exit 1
+    fi
+done
 printf 'Staged audio libraries: %s\n' "$work/stage"
 printf 'Not installed into Test2; retain device ALSA configuration during integration.\n'

@@ -25,7 +25,23 @@ mkdir -p "$work"
 work=$(cd -- "$work" && pwd)
 run=$(mktemp -d "$work/run.XXXXXX")
 sysroot="$run/sysroot"
-mkdir -p "$sysroot/usr" "$run/build" "$run/stage"
+mkdir -p "$sysroot/usr" "$run/build" "$run/stage" "$run/src"
+# Build a patched copy; the pinned checkout stays clean. Not `git apply`: run
+# inside this repository it silently skips every path.
+git -C "$source_dir" archive HEAD | tar -x -C "$run/src"
+# Byte order, not the locale, decides the order of multiple patches. The list
+# is built in a checked step so a failed listing cannot skip patches.
+patches=$(LC_ALL=C ls -1 "$repo"/scripts/base_image/bluealsa-*.patch | LC_ALL=C sort)
+[[ -n "$patches" ]] || { echo 'No BlueALSA patches found' >&2; exit 1; }
+while IFS= read -r fix; do
+    (cd "$run/src" && patch -p1 --forward --fuzz=0 --no-backup-if-mismatch < "$fix")
+done <<< "$patches"
+grep -q 'rtp_a2dp_get_payload(const rtp_header_t \*hdr, size_t len, size_t min_payload)' "$run/src/src/rtp.h" ||
+    { echo 'BlueALSA RTP length patch not applied' >&2; exit 1; }
+grep -q 'keep_remote_volume' "$run/src/src/bluealsa-dbus.c" ||
+    { echo 'BlueALSA sink soft-volume patch not applied' >&2; exit 1; }
+grep -q 'Preferring SBC Dual Channel HD' "$run/src/src/a2dp-sbc.c" ||
+    { echo 'BlueALSA SBC XQ capability patch not applied' >&2; exit 1; }
 for stage in "${stages[@]}"; do cp -a "$stage/usr/." "$sysroot/usr/"; done
 # Libtool .la metadata from staged libraries can cause it to embed the
 # workstation sysroot as an RPATH. pkg-config supplies the required linkage;
@@ -47,10 +63,10 @@ for package in alsa bluez dbus-1 gio-unix-2.0 glib-2.0 sbc fdk-aac ldacBT-enc ld
 done
 aptx_option=--with-libopenaptx
 if pkg-config --exists libfreeaptx; then aptx_option=--with-libfreeaptx; fi
-if [[ ! -f "$source_dir/configure" ]]; then (cd "$source_dir" && autoreconf --install); fi
+(cd "$run/src" && autoreconf --install)
 (
     cd "$run/build"
-    "$source_dir/configure" --host=mips-linux-gnu --prefix=/usr --libdir=/usr/lib \
+    "$run/src/configure" --host=mips-linux-gnu --prefix=/usr --libdir=/usr/lib \
         --sysconfdir=/etc --localstatedir=/var --disable-static --disable-manpages \
         --with-alsaplugindir=/usr/lib/alsa-lib --with-alsaconfdir=/etc/alsa/conf.d \
         --with-dbusconfdir=/etc/dbus-1/system.d --with-dbus-iface-xml=/usr/share/dbus-1/interfaces \

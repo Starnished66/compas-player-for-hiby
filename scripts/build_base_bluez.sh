@@ -78,6 +78,19 @@ mkdir -p -- "$SOURCE_ROOT" "$BUILD" "$STAGE" "$SYSROOT/usr/include" "$SYSROOT/us
 tar -xf "$source_archive" -C "$SOURCE_ROOT"
 readonly SOURCE="$SOURCE_ROOT/bluez-$BLUEZ_VERSION"
 [[ -d $SOURCE && -f $SOURCE/configure ]] || die "archive did not contain bluez-$BLUEZ_VERSION"
+# Local fixes, in byte order. Not `git apply`: run inside this repository it
+# silently skips every path.
+bluez_patches=$(LC_ALL=C ls -1 "$REPO_ROOT"/scripts/base_image/bluez-*.patch | LC_ALL=C sort)
+[[ -n $bluez_patches ]] || die 'no BlueZ patches found'
+while IFS= read -r fix; do
+    (cd "$SOURCE" && patch -p1 --forward --fuzz=0 --no-backup-if-mismatch < "$fix")
+done <<< "$bluez_patches"
+for patched in a2dp.c avdtp.c; do
+    grep -q 'BT_IO_OPT_IMTU, 1024' "$SOURCE/profiles/audio/$patched" ||
+        die "BlueZ AVDTP MTU patch not applied to $patched"
+done
+grep -q 'handle_transport_connect(session, chan, imtu, omtu);' "$SOURCE/profiles/audio/avdtp.c" ||
+    die 'BlueZ AVDTP media MTU patch not applied'
 
 # bluetoothctl requires readline headers, but the vendor rootfs contains only
 # its ABI-compatible runtime library. Prefer host headers when available;

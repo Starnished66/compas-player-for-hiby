@@ -1,0 +1,41 @@
+diff -ruN a/profiles/audio/a2dp.c b/profiles/audio/a2dp.c
+--- a/profiles/audio/a2dp.c	2026-09-26 07:58:28.240457053 -0600
++++ b/profiles/audio/a2dp.c	2026-09-26 07:58:28.251380398 -0600
+@@ -2774,8 +2774,11 @@
+ 				BT_IO_OPT_MODE, mode,
+ 				BT_IO_OPT_SEC_LEVEL, BT_IO_SEC_MEDIUM,
+ 				BT_IO_OPT_CENTRAL, true,
+-				/* Set Input MTU to 0 for auto-tune attempt */
+-				BT_IO_OPT_IMTU, 0,
++				/* HiBy R1: kernel 4.4 rejects an input MTU of 0
++				 * (auto-tune) and keeps the 672-byte L2CAP default.
++				 * Phones send LDAC packets larger than that, which
++				 * were lost. Ask for 1024 explicitly. */
++				BT_IO_OPT_IMTU, 1024,
+ 				BT_IO_OPT_INVALID);
+ 	if (server->io)
+ 		return true;
+diff -ruN a/profiles/audio/avdtp.c b/profiles/audio/avdtp.c
+--- a/profiles/audio/avdtp.c	2026-09-26 07:58:28.240530721 -0600
++++ b/profiles/audio/avdtp.c	2026-09-26 07:58:28.251661214 -0600
+@@ -2529,8 +2529,9 @@
+ 					BT_IO_OPT_PSM, AVDTP_PSM,
+ 					BT_IO_OPT_MODE, mode,
+ 					BT_IO_OPT_SEC_LEVEL, BT_IO_SEC_MEDIUM,
+-					/* Set Input MTU to 0 to auto-tune */
+-					BT_IO_OPT_IMTU, 0,
++					/* HiBy R1: see the a2dp.c server listen for
++					 * why 1024 rather than 0 (auto-tune). */
++					BT_IO_OPT_IMTU, 1024,
+ 					BT_IO_OPT_INVALID);
+ 	else
+ 		io = bt_io_connect(avdtp_connect_cb, session,
+@@ -2541,6 +2542,8 @@
+ 					BT_IO_OPT_PSM, AVDTP_PSM,
+ 					BT_IO_OPT_MODE, mode,
+ 					BT_IO_OPT_SEC_LEVEL, BT_IO_SEC_MEDIUM,
++					/* HiBy R1: same input MTU as above. */
++					BT_IO_OPT_IMTU, 1024,
+ 					BT_IO_OPT_INVALID);
+ 	if (!io) {
+ 		error("%s", err->message);

@@ -1,0 +1,29 @@
+diff -ruN a/src/a2dp-sbc.c b/src/a2dp-sbc.c
+--- a/src/a2dp-sbc.c	2026-09-26 13:14:22.715962858 -0600
++++ b/src/a2dp-sbc.c	2026-09-26 13:14:22.727007608 -0600
+@@ -574,13 +574,20 @@
+ 
+ static error_code_t a2dp_sbc_source_init(struct a2dp_sep *sep) {
+ 
++	/* HiBy: SBC XQ/XQ+ is a preference, not a capability restriction.
++	 * Narrowing the advertised capabilities to 44.1 kHz dual channel made
++	 * sinks without dual channel (common, although A2DP requires it) fail
++	 * SBC configuration, and rejected sink-proposed configurations other
++	 * than 44.1 kHz dual channel (e.g. joint stereo when headphones
++	 * reconnect), so SBC-only devices did not connect at all. The full set
++	 * is advertised instead: configuration_select() still picks 44.1 kHz
++	 * dual channel when the sink supports it, and sbc_a2dp_get_bitpool()
++	 * uses the XQ bit-pool for exactly that configuration and high quality
++	 * otherwise. */
+ 	if (config.sbc_quality == SBC_QUALITY_XQ ||
+-			config.sbc_quality == SBC_QUALITY_XQPLUS) {
+-		info("SBC: Activating SBC Dual Channel HD (SBC %s)",
++			config.sbc_quality == SBC_QUALITY_XQPLUS)
++		info("SBC: Preferring SBC Dual Channel HD (SBC %s) where the sink supports it",
+ 				config.sbc_quality == SBC_QUALITY_XQ ? "XQ" : "XQ+");
+-		sep->config.capabilities.sbc.sampling_freq = SBC_SAMPLING_FREQ_44100;
+-		sep->config.capabilities.sbc.channel_mode = SBC_CHANNEL_MODE_DUAL_CHANNEL;
+-	}
+ 
+ 	if (config.a2dp.force_mono)
+ 		/* With this we are violating A2DP SBC requirements. According to spec,

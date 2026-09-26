@@ -1,0 +1,786 @@
+diff --git a/bit_reader.c b/bit_reader.c
+index 7352595..b3bf187 100644
+--- a/bit_reader.c
++++ b/bit_reader.c
+@@ -4,22 +4,51 @@
+ static int PeekIntFallback(BitReaderCxt* br, int bitCount);
+ 
+ void InitBitReaderCxt(BitReaderCxt* br, const void * buffer)
++{
++	InitBitReaderCxtLen(br, buffer, 0x7FFFFFF);
++}
++
++void InitBitReaderCxtLen(BitReaderCxt* br, const void * buffer, int length)
+ {
+ 	br->Buffer = buffer;
+ 	br->Position = 0;
++	/* Keep Length * 8 and Position well inside int. */
++	br->Length = length <= 0 ? 0 : (length > 0x0FFFFFFF ? 0x0FFFFFFF : length);
++	br->Overrun = 0;
++}
++
++/* Never dereference past Length: lookahead near the end of a frame and any
++ * corrupt length field both read zeros instead of adjacent memory. */
++static inline uint32_t ByteAt(const BitReaderCxt* br, unsigned int index)
++{
++	return index < (unsigned int)br->Length ? br->Buffer[index] : 0;
++}
++
++void SkipBits(BitReaderCxt* br, const int bits)
++{
++	/* Check the remaining capacity before adding: the position never
++	 * overflows, and an overrun parks it at the end. */
++	const int end = br->Length * 8;
++	if (bits < 0 || br->Position > end || bits > end - br->Position)
++	{
++		br->Overrun = 1;
++		br->Position = end;
++		return;
++	}
++	br->Position += bits;
+ }
+ 
+ uint32_t ReadInt(BitReaderCxt* br, const int bits)
+ {
+     const uint32_t value = PeekInt(br, bits);
+-	br->Position += bits;
++	SkipBits(br, bits);
+ 	return value;
+ }
+ 
+ int32_t ReadSignedInt(BitReaderCxt* br, const int bits)
+ {
+ 	const int value = PeekInt(br, bits);
+-	br->Position += bits;
++	SkipBits(br, bits);
+ 	return SignExtend32(value, bits);
+ }
+ 
+@@ -27,7 +56,7 @@ int ReadOffsetBinary(BitReaderCxt* br, const int bits)
+ {
+ 	const int offset = 1 << (bits - 1);
+ 	const int value = PeekInt(br, bits) - offset;
+-	br->Position += bits;
++	SkipBits(br, bits);
+ 	return value;
+ }
+ 
+@@ -35,11 +64,18 @@ uint32_t PeekInt(BitReaderCxt* br, const int bits)
+ {
+ 	const unsigned int byteIndex = br->Position / 8;
+ 	const unsigned int bitIndex = br->Position % 8;
+-	const uint8_t* buffer = br->Buffer;
++
++	if (bits == 0)
++		return 0; /* a zero-width field reads as 0 */
++	if (bits < 0 || bits > 32 || br->Position < 0)
++	{
++		br->Overrun = 1;
++		return 0;
++	}
+ 
+ 	if (bits <= 9)
+ 	{
+-		uint32_t value = buffer[byteIndex] << 8 | buffer[byteIndex + 1];
++		uint32_t value = ByteAt(br, byteIndex) << 8 | ByteAt(br, byteIndex + 1);
+         value &= 0xFFFF >> bitIndex;
+         value >>= 16 - bits - bitIndex;
+         return value;
+@@ -47,7 +83,7 @@ uint32_t PeekInt(BitReaderCxt* br, const int bits)
+ 
+ 	if (bits <= 17)
+ 	{
+-		uint32_t value = buffer[byteIndex] << 16 | buffer[byteIndex + 1] << 8 | buffer[byteIndex + 2];
++		uint32_t value = ByteAt(br, byteIndex) << 16 | ByteAt(br, byteIndex + 1) << 8 | ByteAt(br, byteIndex + 2);
+ 		value &= 0xFFFFFF >> bitIndex;
+ 		value >>= 24 - bits - bitIndex;
+ 		return value;
+@@ -55,10 +91,10 @@ uint32_t PeekInt(BitReaderCxt* br, const int bits)
+ 
+ 	if (bits <= 25)
+ 	{
+-		uint32_t value = buffer[byteIndex] << 24
+-			| buffer[byteIndex + 1] << 16
+-			| buffer[byteIndex + 2] << 8
+-			| buffer[byteIndex + 3];
++		uint32_t value = ByteAt(br, byteIndex) << 24
++			| ByteAt(br, byteIndex + 1) << 16
++			| ByteAt(br, byteIndex + 2) << 8
++			| ByteAt(br, byteIndex + 3);
+ 
+ 		value &= (int)(0xFFFFFFFF >> bitIndex);
+ 		value >>= 32 - bits - bitIndex;
+@@ -75,15 +111,14 @@ void AlignPosition(BitReaderCxt* br, const unsigned int multiple)
+ 		return;
+ 	}
+ 
+-	br->Position = position + multiple - position % multiple;
++	SkipBits(br, multiple - position % multiple);
+ }
+ 
+ static int PeekIntFallback(BitReaderCxt* br, int bitCount)
+ {
+-	int value = 0;
++	uint32_t value = 0; /* unsigned: shifting in up to 32 bits is defined */
+ 	int byteIndex = br->Position / 8;
+ 	int bitIndex = br->Position % 8;
+-	const unsigned char* buffer = br->Buffer;
+ 
+ 	while (bitCount > 0)
+ 	{
+@@ -100,11 +135,11 @@ static int PeekIntFallback(BitReaderCxt* br, int bitCount)
+ 		}
+ 
+ 		const int mask = 0xFF >> bitIndex;
+-		const int currentByte = (mask & buffer[byteIndex]) >> (8 - bitIndex - bitsToRead);
++		const int currentByte = (mask & (int)ByteAt(br, byteIndex)) >> (8 - bitIndex - bitsToRead);
+ 
+-		value = (value << bitsToRead) | currentByte;
++		value = (value << bitsToRead) | (uint32_t)currentByte;
+ 		bitIndex += bitsToRead;
+ 		bitCount -= bitsToRead;
+ 	}
+-	return value;
++	return (int)value;
+ }
+diff --git a/bit_reader.h b/bit_reader.h
+index e6c37f9..4d2fca8 100644
+--- a/bit_reader.h
++++ b/bit_reader.h
+@@ -5,13 +5,18 @@
+ typedef struct {
+ 	const uint8_t * Buffer;
+ 	int Position;
++	int Length;   /* bytes readable from Buffer */
++	int Overrun;  /* set once a read consumed bits past Length */
+ } BitReaderCxt;
+ 
+ // Make MSVC compiler happy. Leave const in for value parameters
+ 
+ void InitBitReaderCxt(BitReaderCxt* br, const void * buffer);
++/* Bounded reader: bytes past length read as zero and set Overrun. */
++void InitBitReaderCxtLen(BitReaderCxt* br, const void * buffer, int length);
+ uint32_t PeekInt(BitReaderCxt* br, const int bits);
+ uint32_t ReadInt(BitReaderCxt* br, const int bits);
+ int32_t ReadSignedInt(BitReaderCxt* br, const int bits);
+ int32_t ReadOffsetBinary(BitReaderCxt* br, const int bits);
+ void AlignPosition(BitReaderCxt* br, const unsigned int multiple);
++void SkipBits(BitReaderCxt* br, const int bits);
+diff --git a/huffCodes.c b/huffCodes.c
+index 4b4c229..6d6650f 100644
+--- a/huffCodes.c
++++ b/huffCodes.c
+@@ -7,7 +7,7 @@ int ReadHuffmanValue(const HuffmanCodebook* huff, BitReaderCxt* br, int isSigned
+ 	const int code = PeekInt(br, huff->MaxBitSize);
+ 	const unsigned char value = huff->Lookup[code];
+ 	const int bits = huff->Bits[value];
+-	br->Position += bits;
++	SkipBits(br, bits);
+ 	return isSigned ? SignExtend32(value, huff->ValueBits) : value;
+ }
+ 
+diff --git a/ldacdec.c b/ldacdec.c
+index cfde67d..ec09ae3 100644
+--- a/ldacdec.c
++++ b/ldacdec.c
+@@ -79,19 +79,20 @@ int main(int argc, char *args[] )
+         if( bytesInBuffer == 0 ){
+             break;
+         }
+-#if 1
+-        while(ptr[0] != 0xAA) 
++        /* Sync search stays inside what was read. */
++        while( ptr < buf + bytesInBuffer && ptr[0] != 0xAA )
+         {
+             ptr++;
+             filePosition++;
+         }
+-#endif        
++        if( ptr >= buf + bytesInBuffer )
++            break;
+         LOG("sync: %02x\n", ptr[0] );
+         int bytesUsed = 0;
+       
+         memset( pcm, 0, sizeof(pcm) );
+         LOG("count === %4d ===\n", blockId++ );
+-        ret = ldacDecode_type( &dec, ptr, pcm, &bytesUsed, 4); 
++        ret = ldacDecode_type_len( &dec, ptr, (int)(buf + bytesInBuffer - ptr), pcm, &bytesUsed, 4 );
+         if( ret < 0 ){
+             break;
+         }
+diff --git a/ldacdec.h b/ldacdec.h
+index 2db5690..4a54940 100644
+--- a/ldacdec.h
++++ b/ldacdec.h
+@@ -2,6 +2,7 @@
+ #define __LDACDEC_H_
+ 
+ #define MAX_QUANT_UNITS     (34)
++#define MAX_GRADIENT_UNITS  (50) /* LDAC gradient quant units (Sony: grad_qu < 50) */
+ #define MAX_FRAME_SAMPLES   (256)
+ 
+ #include "log.h"
+@@ -58,7 +59,7 @@ struct Frame {
+     int nbrBands;
+     
+     // gradient data
+-    int gradient[MAX_QUANT_UNITS];
++    int gradient[MAX_GRADIENT_UNITS];
+     int gradientMode;
+     int gradientStartUnit;
+     int gradientEndUnit;
+@@ -70,6 +71,12 @@ struct Frame {
+ 
+     int channelCount;
+     channel_t channels[2];
++
++    /* Negotiated at ldacBT_init_handle_decode(); 0 accepts any. The config
++     * is stored as channelConfigId + 1. Frames that disagree are rejected:
++     * the caller plays PCM at the negotiated rate and channel count. */
++    int negotiatedRate;
++    int negotiatedConfig;
+ };
+ 
+ typedef struct {
+@@ -78,8 +85,13 @@ typedef struct {
+ } ldacdec_t;
+ 
+ int ldacdecInit( ldacdec_t *this );
++/* Legacy, lengthless: the caller must supply a complete frame (at least
++ * frameLength + 3 readable bytes). Untrusted input must use
++ * ldacDecode_type_len() or ldacBT_decode(), which take the real length. */
+ int ldacDecode( ldacdec_t *this, uint8_t *stream, short *pcm, int *bytesUsed );
+ int ldacDecode_type( ldacdec_t *this, uint8_t *stream, void *pcm, int *bytesUsed, LDACBT_SMPL_FMT_T fmt );
++/* Bounded variant: never reads past streamSize; a frame that would returns -1. */
++int ldacDecode_type_len( ldacdec_t *this, uint8_t *stream, int streamSize, void *pcm, int *bytesUsed, LDACBT_SMPL_FMT_T fmt );
+ int ldacNullPacket( ldacdec_t *this, uint8_t *output, int *bytesUsed );
+ int ldacdecGetSampleRate( ldacdec_t *this );
+ int ldacdecGetChannelCount( ldacdec_t *this );
+diff --git a/libldacdec.c b/libldacdec.c
+index 71bff57..b264453 100644
+--- a/libldacdec.c
++++ b/libldacdec.c
+@@ -1,4 +1,7 @@
+ #include <assert.h>
++#include <math.h>
++#include <pthread.h>
++#include <stdint.h>
+ #include <string.h>
+ 
+ #include "ldacdec.h"
+@@ -114,13 +117,25 @@ static const uint8_t ga_nqus_ldac[LDAC_MAXNBANDS+1] = {
+ };
+ 
+ 
+-int ldacdecInit( ldacdec_t *this )
++static pthread_once_t ldacdec_tables_once = PTHREAD_ONCE_INIT;
++
++static void ldacdecInitTables( void )
+ {
+     InitHuffmanCodebooks();
+     InitMdct();
++}
++
++int ldacdecInit( ldacdec_t *this )
++{
++    /* Global tables: build once, never rewrite while another handle reads. */
++    pthread_once( &ldacdec_tables_once, ldacdecInitTables );
+ 
+     memset( &this->frame.channels[0].mdct, 0, sizeof( Mdct ) );
+     memset( &this->frame.channels[1].mdct, 0, sizeof( Mdct ) );
++    /* Accept any stream until ldacBT_init_handle_decode() says otherwise;
++     * the handle may live in uninitialized storage. */
++    this->frame.negotiatedRate = 0;
++    this->frame.negotiatedConfig = 0;
+ 
+     this->frame.channels[0].frame = &this->frame;
+     this->frame.channels[1].frame = &this->frame;
+@@ -134,6 +149,9 @@ static int decodeBand( frame_t *this, BitReaderCxt *br )
+     LOG("nbrBands:        %d\n", this->nbrBands );
+     ReadInt( br, LDAC_FLAGBITS ); // unused
+ 
++    /* Stream-controlled: never index ga_nqus_ldac past its end. */
++    if( this->nbrBands > LDAC_MAXNBANDS )
++        return -1;
+     this->quantizationUnitCount = ga_nqus_ldac[this->nbrBands];
+     return 0;
+ }
+@@ -162,6 +180,10 @@ static int decodeGradient( frame_t *this, BitReaderCxt *br )
+     }
+ 
+     this->gradientBoundary = ReadInt( br, LDAC_NADJQUBITS );
++    /* Sony allows gradient units up to 50 (beyond the 34 coded units); a
++     * corrupt range must not write or look up past the gradient array. */
++    if( this->gradientStartUnit >= MAX_GRADIENT_UNITS || this->gradientEndUnit > MAX_GRADIENT_UNITS )
++        return -1;
+     return 0;
+ }
+ 
+@@ -188,9 +210,10 @@ static void calculateGradient( frame_t *this )
+             }
+         } else if( valueCount < 0 )
+         {
++            /* Sony's descending curve: add, with a positive magnitude. */
+             for( int i=this->gradientStartUnit; i<this->gradientEndUnit; ++i )
+             {
+-                this->gradient[i] -= ((curve[i-this->gradientStartUnit] * (valueCount-1)) >> 8) + 1;
++                this->gradient[i] += ((curve[i-this->gradientStartUnit] * (-valueCount-1)) >> 8) + 1;
+             }
+         }
+     }
+@@ -265,7 +288,7 @@ static void calculatePrecisions( channel_t *this )
+         }
+     }
+ 
+-    for( int i=0; i<frame->gradientBoundary; ++i )
++    for( int i=0; i<frame->gradientBoundary && i<frame->quantizationUnitCount; ++i )
+     {
+         this->precisions[i]++;
+     }
+@@ -275,7 +298,10 @@ static void calculatePrecisions( channel_t *this )
+         this->precisionsFine[i] = 0;
+         if( this->precisions[i] > LDAC_MAXIDWL1 )
+         {
+-            this->precisionsFine[i] = this->precisions[i] - LDAC_MAXIDWL1;
++            /* LDAC caps the fine word length at LDAC_MAXIDWL2 (the encoder
++             * never exceeds it). Uncapped, loud passages index ga_wl_ldac
++             * past its 16 entries in decodeSpectrumFine(). */
++            this->precisionsFine[i] = min( this->precisions[i] - LDAC_MAXIDWL1, LDAC_MAXIDWL2 );
+             this->precisions[i] = LDAC_MAXIDWL1;
+         }
+     }
+@@ -340,11 +366,10 @@ static int decodeScaleFactor1( channel_t *this, BitReaderCxt *br )
+     return 0;
+ }
+ 
+-int decodeScaleFactor2( channel_t *this, BitReaderCxt *br )
++int decodeScaleFactor2( channel_t *this, channel_t *other, BitReaderCxt *br )
+ {
+     LOG_FUNCTION();
+     frame_t *frame = this->frame;
+-    channel_t *other = &frame->channels[0];
+ 
+     this->scaleFactorBitlen = ReadInt( br, LDAC_SFCBLENBITS ) + LDAC_MINSFCBLEN_2;
+     LOG("scale factor bitlen: %d\n", this->scaleFactorBitlen );
+@@ -354,20 +379,23 @@ int decodeScaleFactor2( channel_t *this, BitReaderCxt *br )
+     {
+        int diff = ReadHuffmanValue( codebook, br, 1 );
+ //       printf("%2d, ", diff );
+-       this->scaleFactors[i] = other->scaleFactors[i] + diff;
++       /* Sony packs (right - left) & mask: wrap back into the 5-bit range. */
++       this->scaleFactors[i] = (other->scaleFactors[i] + diff) & ((1<<LDAC_IDSFBITS)-1);
+     }
+ 
+     LOG_ARRAY_LEN( this->scaleFactors, "%2d, ", frame->quantizationUnitCount );
+     return 0;
+ }
+ 
+-int decodeScaleFactors( frame_t *this, BitReaderCxt *br, int channelNbr )
++/* firstInBlock: the block's first channel is coded on its own; the second
++ * channel of a stereo block may be coded relative to the first. */
++int decodeScaleFactors( frame_t *this, BitReaderCxt *br, int channelNbr, int firstInBlock )
+ {
+     LOG_FUNCTION();
+     channel_t *channel = &this->channels[channelNbr];
+     channel->scaleFactorMode = ReadInt( br, LDAC_SFCMODEBITS );
+     LOG("scale factor mode = %d\n", channel->scaleFactorMode );
+-    if( channelNbr == 0 )
++    if( firstInBlock )
+     {
+         if( channel->scaleFactorMode == LDAC_MODE_0 )
+             decodeScaleFactor0( channel, br );
+@@ -378,7 +406,7 @@ int decodeScaleFactors( frame_t *this, BitReaderCxt *br, int channelNbr )
+         if( channel->scaleFactorMode == LDAC_MODE_0 )
+             decodeScaleFactor0( channel, br );
+         else
+-            decodeScaleFactor2( channel, br );
++            decodeScaleFactor2( channel, &this->channels[channelNbr-1], br );
+     }
+     return 0;
+ }
+@@ -403,7 +431,10 @@ static void pcmFloatToShort( frame_t *this, int16_t *pcmOut )
+     {
+         for( int ch=0; ch<this->channelCount; ++ch, ++i )
+         {
+-            pcmOut[i] = Clamp16(Round(this->channels[ch].pcm[smpl]));
++            scalar v = this->channels[ch].pcm[smpl];
++            if( v > 32767.0 ) v = 32767.0;
++            if( v < -32768.0 ) v = -32768.0;
++            pcmOut[i] = Clamp16(Round(v));
+         }
+     }
+ }
+@@ -427,7 +458,13 @@ static void pcmFloatToInt( frame_t *this, int32_t *pcmOut )
+     {
+         for( int ch=0; ch<this->channelCount; ++ch, ++i )
+         {
+-            pcmOut[i] = Round(this->channels[ch].pcm[smpl]*(1<<15));
++            /* Internal PCM is in 16-bit units, so full scale for S32 is x * 65536
++             * (1<<15 played 6 dB quiet). Saturate first: out-of-range float to
++             * int conversion is undefined. */
++            double v = (double)this->channels[ch].pcm[smpl] * 65536.0;
++            if( v > 2147483647.0 ) pcmOut[i] = INT32_MAX;
++            else if( v < -2147483648.0 ) pcmOut[i] = INT32_MIN;
++            else pcmOut[i] = (int32_t)lrint( v );
+         }
+     }
+ }
+@@ -435,7 +472,10 @@ static const int channelConfigIdToChannelCount[] = { 1, 2, 2 };
+ 
+ int ldacdecGetChannelCount( ldacdec_t *this )
+ {
+-    return channelConfigIdToChannelCount[this->frame.channelConfigId];
++    const int id = this->frame.channelConfigId;
++    if( id < 0 || id >= (int)(sizeof(channelConfigIdToChannelCount)/sizeof(channelConfigIdToChannelCount[0])) )
++        return 0;
++    return channelConfigIdToChannelCount[id];
+ }
+ 
+ static const unsigned short sampleRateIdToSamplesPower[] = {
+@@ -446,7 +486,10 @@ static const int sampleRateIdToFrequency[] = { 44100, 48000, 88200, 96000 };
+ 
+ int ldacdecGetSampleRate( ldacdec_t *this )
+ {
+-    return sampleRateIdToFrequency[this->frame.sampleRateId];
++    const int id = this->frame.sampleRateId;
++    if( id < 0 || id >= (int)(sizeof(sampleRateIdToFrequency)/sizeof(sampleRateIdToFrequency[0])) )
++        return 0;
++    return sampleRateIdToFrequency[id];
+ }
+ 
+ static int decodeFrame( frame_t *this, BitReaderCxt *br )
+@@ -458,10 +501,25 @@ static int decodeFrame( frame_t *this, BitReaderCxt *br )
+     if( syncWord != LDAC_SYNCWORD )
+         return -1;
+ 
+-    this->sampleRateId = ReadInt( br, LDAC_SMPLRATEBITS );
+-    this->channelConfigId = ReadInt( br, LDAC_CHCONFIG2BITS );
+-    this->frameLength = ReadInt( br, LDAC_FRAMELEN2BITS ) + 1;
+-    this->frameStatus = ReadInt( br, LDAC_FRAMESTATBITS );
++    const int sampleRateId = ReadInt( br, LDAC_SMPLRATEBITS );
++    const int channelConfigId = ReadInt( br, LDAC_CHCONFIG2BITS );
++    const int frameLength = ReadInt( br, LDAC_FRAMELEN2BITS ) + 1;
++    const int frameStatus = ReadInt( br, LDAC_FRAMESTATBITS );
++
++    /* Validate before storing anything: only 44.1/48/88.2/96 kHz and three
++     * channel configs exist, and the frame must match what was negotiated. */
++    if( br->Overrun ||
++        sampleRateId >= (int)(sizeof(sampleRateIdToSamplesPower)/sizeof(sampleRateIdToSamplesPower[0])) ||
++        channelConfigId >= (int)(sizeof(channelConfigIdToChannelCount)/sizeof(channelConfigIdToChannelCount[0])) )
++        return -1;
++    if( (this->negotiatedRate && sampleRateIdToFrequency[sampleRateId] != this->negotiatedRate) ||
++        (this->negotiatedConfig && channelConfigId + 1 != this->negotiatedConfig) )
++        return -1;
++
++    this->sampleRateId = sampleRateId;
++    this->channelConfigId = channelConfigId;
++    this->frameLength = frameLength;
++    this->frameStatus = frameStatus;
+ 
+     this->channelCount = channelConfigIdToChannelCount[this->channelConfigId];
+     this->frameSamplesPower = sampleRateIdToSamplesPower[this->sampleRateId];
+@@ -482,99 +540,94 @@ static int decodeFrame( frame_t *this, BitReaderCxt *br )
+ 
+ int ldacDecode( ldacdec_t *this, uint8_t *stream, short *pcm, int *bytesUsed )
+ {
+-    BitReaderCxt brObject;
+-    BitReaderCxt *br = &brObject;
+-    InitBitReaderCxt( br, stream );
+-
+-    frame_t *frame = &this->frame;
+-
+-    int ret = decodeFrame( frame, br );
+-    if( ret < 0 )
+-        return -1;
+-
+-    for( int block = 0; block<gaa_block_setting_ldac[frame->channelConfigId][1]; ++block )
+-    {
+-        decodeBand( frame, br );
+-        decodeGradient( frame, br );
+-        calculateGradient( frame );
+-
+-        for( int i=0; i<frame->channelCount; ++i )
+-        {
+-            channel_t *channel = &frame->channels[i];
+-            decodeScaleFactors( frame, br, i );
+-            calculatePrecisionMask( channel );
+-            calculatePrecisions( channel );
+-
+-            decodeSpectrum( channel, br );
+-            decodeSpectrumFine( channel, br );
+-            dequantizeSpectra( channel );
+-            scaleSpectrum( channel );
+-
+-            RunImdct( &channel->mdct, channel->spectra, channel->pcm );
+-        }
+-        AlignPosition( br, 8 );
+-
+-        pcmFloatToShort( frame, pcm );
+-    }
+-    AlignPosition( br, (frame->frameLength)*8 + 24 );
+-
+-    if( bytesUsed != NULL )
+-        *bytesUsed = br->Position / 8;
+-    return 0;
++    /* No length in this legacy API: parsing is still bounded by the frame's
++     * own length field. */
++    return ldacDecode_type_len( this, stream, 0x7FFFFFF, pcm, bytesUsed, LDACBT_SMPL_FMT_S16 );
+ }
+ 
+ int ldacDecode_type( ldacdec_t *this, uint8_t *stream, void *pcm, int *bytesUsed, LDACBT_SMPL_FMT_T fmt)
+ {
++    return ldacDecode_type_len( this, stream, 0x7FFFFFF, pcm, bytesUsed, fmt );
++}
++
++/* Decodes one frame of at most streamSize bytes. Everything is parsed and
++ * validated before any state that outlives the frame (IMDCT overlap) or the
++ * output buffer is touched, so a rejected frame leaves no trace; on success
++ * exactly the frame's own size (frameLength + 3) is reported as used. */
++int ldacDecode_type_len( ldacdec_t *this, uint8_t *stream, int streamSize, void *pcm, int *bytesUsed, LDACBT_SMPL_FMT_T fmt)
++{
++    if( bytesUsed != NULL )
++        *bytesUsed = 0;
++    if( fmt != LDACBT_SMPL_FMT_S16 && fmt != LDACBT_SMPL_FMT_S32 && fmt != LDACBT_SMPL_FMT_F32 )
++        return -1;
++
+     BitReaderCxt brObject;
+     BitReaderCxt *br = &brObject;
+-    InitBitReaderCxt( br, stream );
++    InitBitReaderCxtLen( br, stream, streamSize );
+ 
+     frame_t *frame = &this->frame;
+ 
+-    int ret = decodeFrame( frame, br );
+-    if( ret < 0 )
++    if( decodeFrame( frame, br ) < 0 || br->Overrun )
+         return -1;
+ 
+-    for( int block = 0; block<gaa_block_setting_ldac[frame->channelConfigId][1]; ++block )
++    /* 24-bit header plus frameLength payload bytes: never parse into the
++     * next frame, and never past what the caller has. */
++    const int frameBytes = frame->frameLength + 3;
++    if( frameBytes > streamSize )
++        return -1;
++    br->Length = frameBytes;
++
++    const int blocks = gaa_block_setting_ldac[frame->channelConfigId][1];
++    for( int block = 0; block<blocks; ++block )
+     {
+-        decodeBand( frame, br );
+-        decodeGradient( frame, br );
++        if( decodeBand( frame, br ) < 0 || decodeGradient( frame, br ) < 0 )
++            return -1;
+         calculateGradient( frame );
+ 
+-        for( int i=0; i<frame->channelCount; ++i )
++        /* A stereo block codes both channels; each dual-mono block codes
++         * its own channel. */
++        const int blockChannels = gaa_block_setting_ldac[frame->channelConfigId][2+block] == STEREO ? 2 : 1;
++        for( int k=0; k<blockChannels; ++k )
+         {
+-            channel_t *channel = &frame->channels[i];
+-            decodeScaleFactors( frame, br, i );
++            const int ci = block + k;
++            channel_t *channel = &frame->channels[ci];
++            decodeScaleFactors( frame, br, ci, k == 0 );
++            /* Scale factors are 5-bit (0..31) in every mode; scaleSpectrum()
++             * indexes a 32-entry table with them. */
++            for( int q=0; q<frame->quantizationUnitCount; ++q )
++                if( channel->scaleFactors[q] < 0 || channel->scaleFactors[q] > 31 )
++                    return -1;
+             calculatePrecisionMask( channel );
+             calculatePrecisions( channel );
+ 
+-            decodeSpectrum( channel, br );
++            if( decodeSpectrum( channel, br ) < 0 )
++                return -1;
+             decodeSpectrumFine( channel, br );
+             dequantizeSpectra( channel );
+             scaleSpectrum( channel );
+-
+-            RunImdct( &channel->mdct, channel->spectra, channel->pcm );
++            if( br->Overrun )
++                return -1; /* truncated or corrupt frame: drop it */
+         }
+         AlignPosition( br, 8 );
++        if( br->Overrun )
++            return -1;
++    }
+ 
+-        switch(fmt){
+-            case LDACBT_SMPL_FMT_F32:
+-                pcmFloatToFloat( frame, pcm );
+-                break;
+-            case LDACBT_SMPL_FMT_S32:
+-                pcmFloatToInt( frame, pcm );
+-                break;
+-            case LDACBT_SMPL_FMT_S16:
+-                pcmFloatToShort( frame, pcm);
+-                break;
+-            default: return 666;
+-        }
+-
++    /* Validated: now commit overlap history and write the output. */
++    for( int ci=0; ci<frame->channelCount; ++ci )
++    {
++        channel_t *channel = &frame->channels[ci];
++        RunImdct( &channel->mdct, channel->spectra, channel->pcm );
++    }
++    switch( fmt )
++    {
++        case LDACBT_SMPL_FMT_F32: pcmFloatToFloat( frame, pcm ); break;
++        case LDACBT_SMPL_FMT_S32: pcmFloatToInt( frame, pcm ); break;
++        default: pcmFloatToShort( frame, pcm ); break;
+     }
+-    AlignPosition( br, (frame->frameLength)*8 + 24 );
+ 
+     if( bytesUsed != NULL )
+-        *bytesUsed = br->Position / 8;
++        *bytesUsed = frameBytes;
+     return 0;
+ }
+ 
+@@ -635,27 +688,45 @@ HANDLE_LDAC_BT ldacBT_get_handle(void)
+     return hLdacBT;
+ }
+ 
++/* A2DP LDAC channel-mode values (as in AOSP ldacBT.h, not included here). */
++#ifndef LDACBT_CHANNEL_MODE_MONO
++#define LDACBT_CHANNEL_MODE_MONO           0x04
++#define LDACBT_CHANNEL_MODE_DUAL_CHANNEL   0x02
++#define LDACBT_CHANNEL_MODE_STEREO         0x01
++#endif
++
+ int ldacBT_init_handle_decode(HANDLE_LDAC_BT hLdacBT, int cm, int sf, int nshift, int var1, int var2){
+-    (void)cm;
+-    (void)sf;
+     (void)nshift;
+     (void)var1;
+     (void)var2;
++    if(hLdacBT == NULL) return -1;
+ 
+-    if(hLdacBT->proc_mode != LDACBT_PROCMODE_DECODE) {
++    if(hLdacBT->proc_mode != LDACBT_PROCMODE_DECODE || hLdacBT->hLDAC == NULL) {
++        ldacdec_t *dec = calloc(1, sizeof(ldacdec_t));
++        if(dec == NULL) return -1; /* never abort the host daemon */
+         free(hLdacBT->hLDAC);
+         hLdacBT->proc_mode = LDACBT_PROCMODE_DECODE;
+-        ldacdec_t *dec = calloc(1, sizeof(ldacdec_t));
+-        assert(dec != NULL);
+         hLdacBT->hLDAC = (HANDLE_LDAC)dec;
+     }
+ 
+-    return ldacdecInit((ldacdec_t *)hLdacBT->hLDAC);
++    ldacdec_t *dec = (ldacdec_t *)hLdacBT->hLDAC;
++    if(ldacdecInit(dec) != 0) return -1;
++    /* Remember the negotiated stream so a frame that disagrees is rejected
++     * instead of being played at the wrong rate or channel count. */
++    dec->frame.negotiatedRate = sf > 0 ? sf : 0;
++    dec->frame.negotiatedConfig =
++        cm == LDACBT_CHANNEL_MODE_MONO ? 1 :
++        cm == LDACBT_CHANNEL_MODE_DUAL_CHANNEL ? 2 :
++        cm == LDACBT_CHANNEL_MODE_STEREO ? 3 : 0;
++    return 0;
+ }
+ 
+ int ldacBT_decode(HANDLE_LDAC_BT hLdacBT, uchar *p_stream, void *p_pcm, LDACBT_SMPL_FMT_T fmt, int stream_sz, int *used_bytes, int *pcm_sz){
+-    (void)stream_sz;
++    if(used_bytes != NULL) *used_bytes = 0;
++    if(pcm_sz != NULL) *pcm_sz = 0;
++    if(hLdacBT == NULL) return 516;
+     ldacdec_t *dec = (ldacdec_t *)hLdacBT->hLDAC;
++    if(dec == NULL || p_stream == NULL || p_pcm == NULL || stream_sz <= 0) return hLdacBT->error_code_api=516;
+ 
+     LOG_ADAPT("libldacdec: format: %d\n", fmt);
+ 
+@@ -663,12 +734,15 @@ int ldacBT_decode(HANDLE_LDAC_BT hLdacBT, uchar *p_stream, void *p_pcm, LDACBT_S
+ 
+     if(hLdacBT->proc_mode != LDACBT_PROCMODE_DECODE) return hLdacBT->error_code_api=1000;
+ 
+-    int result = ldacDecode_type(dec, p_stream, p_pcm, used_bytes, fmt);
+-
+-    *pcm_sz = dec->frame.frameSamples * (fmt < 4 ? fmt*2 : 4*2);
+-    LOG_ADAPT("libldacdec: result: %d, pcm_sz: %d, stream_sz: %d, used_bytes: %d\n", result, *pcm_sz, stream_sz, *used_bytes);
+-    if(result == -1) return hLdacBT->error_code_api=516;
+-
+-
+-    return  hLdacBT->error_code_api=result;
++    int used = 0;
++    int result = ldacDecode_type_len(dec, p_stream, stream_sz, p_pcm, &used, fmt);
++    LOG_ADAPT("libldacdec: result: %d, stream_sz: %d, used_bytes: %d\n", result, stream_sz, used);
++    if(result != 0) return hLdacBT->error_code_api=516;
++
++    /* Only a decoded frame reports output: real channel count, and the
++     * sample width of the requested format. */
++    const int bytesPerSample = fmt == LDACBT_SMPL_FMT_S16 ? 2 : 4;
++    if(used_bytes != NULL) *used_bytes = used;
++    if(pcm_sz != NULL) *pcm_sz = dec->frame.frameSamples * dec->frame.channelCount * bytesPerSample;
++    return hLdacBT->error_code_api=0;
+ }
+diff --git a/spectrum.c b/spectrum.c
+index 6dcc11d..80cd918 100644
+--- a/spectrum.c
++++ b/spectrum.c
+@@ -114,6 +114,8 @@ int decodeSpectrum( channel_t *this, BitReaderCxt *br )
+                 for (int j = 0; j < nsps/4; j++, idxSpectrum+=4)
+                 {
+                     int value = decode4DSpectrum[ReadInt( br, LDAC_4DIMSPECBITS )];
++                    if( value < 0 )
++                        return -1; /* codes 81..127 are not valid LDAC 4-D codes */
+                     this->quantizedSpectra[idxSpectrum]   = ((value>>6)&3) - 1;
+                     this->quantizedSpectra[idxSpectrum+1] = ((value>>4)&3) - 1;
+                     this->quantizedSpectra[idxSpectrum+2] = ((value>>2)&3) - 1;
+@@ -158,7 +160,7 @@ static void dequantizeQuantUnit( channel_t* this, int band )
+     const int subBandIndex = ga_isp_ldac[band];
+     const int subBandCount = ga_nsps_ldac[band];
+     const float stepSize = QuantizerStepSize[this->precisions[band]];
+-    const float stepSizeFine = QuantizerFineStepSize[this->precisions[band]];
++    const float stepSizeFine = QuantizerFineStepSize[this->precisionsFine[band]];
+ 
+     for( int sb=0; sb<subBandCount; ++sb )
+     {
+@@ -204,11 +206,15 @@ void scaleSpectrum(channel_t* this)
+ 	{
+         const int startSubBand = ga_isp_ldac[i];
+         const int endSubBand   = ga_isp_ldac[i+1];
+-        if( this->scaleFactors[i] > 0 )
++        /* Every unit is scaled, including factor 0 (2^-15): skipping it
++         * left near-silent units at full level. The caller has validated
++         * 0 <= factor <= 31. */
++        const int sf = this->scaleFactors[i];
++        if( sf >= 0 && sf < 32 )
+         {
+ 	       for (int sb = startSubBand; sb < endSubBand; sb++)
+ 		   {
+-		        spectra[sb] *= spectrumScale[this->scaleFactors[i]];
++		        spectra[sb] *= spectrumScale[sf];
+ 		   }
+         } 
+ 	}
+diff --git a/utility.c b/utility.c
+index e09d0c1..955dbb9 100644
+--- a/utility.c
++++ b/utility.c
+@@ -11,13 +11,20 @@ uint32_t BitReverse32(uint32_t value, int bitCount)
+ 	value = ((value & 0xf0f0f0f0) >> 4) | ((value & 0x0f0f0f0f) << 4);
+ 	value = ((value & 0xff00ff00) >> 8) | ((value & 0x00ff00ff) << 8);
+ 	value = (value >> 16) | (value << 16);
++	if (bitCount <= 0)
++		return 0; /* a shift by 32 is undefined */
+ 	return value >> (32 - bitCount);
+ }
+ 
+ int32_t SignExtend32(int32_t value, int bits)
+ {
+-	const int shift = 8 * sizeof(int32_t) - bits;
+-	return (value << shift) >> shift;
++	/* Defined for every width: no left shift of a signed value. */
++	if (bits <= 0 || bits >= 32)
++		return value;
++	const uint32_t mask = (1u << bits) - 1u;
++	const uint32_t sign = 1u << (bits - 1);
++	const uint32_t v = (uint32_t)value & mask;
++	return (int32_t)(v ^ sign) - (int32_t)sign;
+ }
+ 
+ int16_t Clamp16(int value)
