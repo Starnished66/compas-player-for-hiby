@@ -1748,8 +1748,11 @@ void apply_track_metadata_to_ui(int index, track_metadata_t * out_meta) {
             out_meta->has_album = true;
         }
     } else {
-        metadata_read_without_artwork(path, out_meta);
+        metadata_read_without_artwork(path, out_meta); /* already normalized */
     }
+    /* Stream and remote catalog text reaches the rows too: same single-line,
+     * non-empty rules as file tags. */
+    if (is_remote_track || is_subsonic_stream) metadata_normalize_text_tags(out_meta);
 
     gui_track_info_context_t info = {0};
     snprintf(info.path, sizeof(info.path), "%s", path);

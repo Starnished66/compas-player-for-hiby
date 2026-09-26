@@ -107,6 +107,11 @@ void metadata_read(const char * path, track_metadata_t * out);
 /* Reads textual tags, sequencing, and ReplayGain without extracting
  * embedded cover artwork. Embedded lyrics are also omitted; callers that
  * need lyrics should use the separate lyrics loader. */
+/* Makes each text tag a single display line (control characters become
+ * spaces) and clears has_* for tags with no visible characters. Every
+ * metadata_read*() result is already normalized; call it for metadata built
+ * from other sources (streams, remote catalogs). */
+void metadata_normalize_text_tags(track_metadata_t * out);
 void metadata_read_without_artwork(const char * path, track_metadata_t * out);
 
 /* Like metadata_read(), but retains embedded lyrics while omitting artwork. */

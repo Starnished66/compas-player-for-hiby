@@ -1916,7 +1916,45 @@ static void read_wav_all(const char * path, track_metadata_t * out, bool include
     }
 }
 
+/* One display line per tag: control characters (line breaks from multi-line
+ * tags included, CRLF as one) become spaces, so a label never grows into the
+ * row below it. A tag with no visible characters counts as absent, so callers
+ * apply the same fallback as for a missing tag. Other spacing is kept: it is
+ * part of the value the library groups by. */
+static void normalize_tag_text(char * text, bool * present) {
+    if (!*present) return;
+    bool visible = false;
+    char * w = text;
+    for (const char * r = text; *r; r++) {
+        unsigned char c = (unsigned char) *r;
+        if (c == '\r' && r[1] == '\n') continue;
+        if (c < 0x20 || c == 0x7F) c = ' ';
+        if (c != ' ') visible = true;
+        *w++ = (char) c;
+    }
+    *w = '\0';
+    if (!visible) {
+        text[0] = '\0';
+        *present = false;
+    }
+}
+
+void metadata_normalize_text_tags(track_metadata_t * out) {
+    normalize_tag_text(out->title, &out->has_title);
+    normalize_tag_text(out->artist, &out->has_artist);
+    normalize_tag_text(out->album, &out->has_album);
+    normalize_tag_text(out->album_artist, &out->has_album_artist);
+    normalize_tag_text(out->genre, &out->has_genre);
+}
+
+static void metadata_read_dispatch(const char * path, track_metadata_t * out, bool include_blobs);
+
 static void metadata_read_internal(const char * path, track_metadata_t * out, bool include_blobs) {
+    metadata_read_dispatch(path, out, include_blobs);
+    metadata_normalize_text_tags(out);
+}
+
+static void metadata_read_dispatch(const char * path, track_metadata_t * out, bool include_blobs) {
     memset(out, 0, sizeof(*out));
 
     const char * ext = strrchr(path, '.');
